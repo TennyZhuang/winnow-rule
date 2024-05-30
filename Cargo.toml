@@ -1,21 +1,21 @@
 [package]
-name = "nom-rule"
-version = "0.3.0"
-authors = ["andylokandy"]
+name = "winnow-rule"
+version = "0.1.0"
+authors = ["TennyZhuang"]
 edition = "2021"
 license = "MIT"
-description = "A procedural macro for defining nom combinators in simple DSL"
-homepage = "https://github.com/andylokandy/nom-rule"
-repository = "https://github.com/andylokandy/nom-rule"
-documentation = "https://docs.rs/nom-rule"
+description = "A procedural macro for defining winnow combinators in simple DSL"
+homepage = "https://github.com/TennyZhuang/winnow-rule"
+repository = "https://github.com/TennyZhuang/winnow-rule"
+documentation = "https://docs.rs/winnow-rule"
 readme = "README.md"
-keywords = ["nom", "parsing", "generator", "pest", "macro"]
+keywords = ["winnow", "parsing", "generator", "pest", "macro"]
 
 [lib]
 proc-macro = true
 
 [dependencies]
-nom = "7"
+winnow = "0.6.8"
 syn = "1"
 quote = "1"
 pratt = "0.3"
@@ -24,6 +24,3 @@ proc-macro-error = "1"
 
 [dev-dependencies]
 logos = "0.12"
-
-[features]
-auto-sequence = []

@@ -1,40 +1,38 @@
 use logos::{Logos, Span};
-use nom::{
-    combinator::map,
-    error::{ErrorKind, ParseError},
-    IResult,
+use winnow::{
+    error::ParserError,
+    stream::{Stream, StreamIsPartial},
+    token::any,
+    PResult, Parser,
 };
+use winnow_rule::rule;
 
 use TokenKind::*;
-
-macro_rules! rule {
-    ($($tt:tt)*) => { nom_rule::rule!(match_text, match_token, $($tt)*) }
-}
 
 #[test]
 fn sql_create_table() {
     let tokens = tokenise("create table user (id int, name varchar);");
 
     let mut rule = rule!(
-        CREATE ~ TABLE ~ #ident ~ ^"(" ~ (#ident ~ #ident ~ ","?)* ~ ")" ~ ";" : "CREATE TABLE statement"
+        #CREATE ~ #TABLE ~ #ident ~ ^#LParen ~ (#ident ~ #ident ~ #Comma?)* ~ #RParen ~ #Semicolon : "CREATE TABLE statement"
     );
 
-    let res: IResult<_, _> = rule(&tokens);
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
     assert_eq!(
-        res.unwrap().1,
+        res.unwrap(),
         (
-            &Token {
+            Token {
                 kind: CREATE,
                 text: "create",
                 span: 0..6,
             },
-            &Token {
+            Token {
                 kind: TABLE,
                 text: "table",
                 span: 7..12,
             },
             "user",
-            &Token {
+            Token {
                 kind: LParen,
                 text: "(",
                 span: 18..19,
@@ -43,50 +41,24 @@ fn sql_create_table() {
                 (
                     "id",
                     "int",
-                    Some(&Token {
+                    Some(Token {
                         kind: Comma,
                         text: ",",
-                        span: 25..26,
-                    },),
+                        span: 25..26
+                    })
                 ),
-                ("name", "varchar", None,),
+                ("name", "varchar", None),
             ],
-            &Token {
+            Token {
                 kind: RParen,
                 text: ")",
                 span: 39..40,
             },
-            &Token {
+            Token {
                 kind: Semicolon,
                 text: ";",
                 span: 40..41,
             },
-        ),
-    );
-}
-
-#[cfg(feature = "auto-sequence")]
-#[test]
-fn sql_column_ref() {
-    let tokens = tokenise("a.b");
-
-    let mut rule = rule!(
-         #ident ("." #ident)?
-    );
-
-    let res: IResult<_, _> = rule(&tokens);
-    assert_eq!(
-        dbg!(res.unwrap().1),
-        (
-            "a",
-            Some((
-                &Token {
-                    kind: Whitespace,
-                    text: ".",
-                    span: 1..2,
-                },
-                "b",
-            ),),
         ),
     );
 }
@@ -117,7 +89,18 @@ enum TokenKind {
     Ident,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl<'a, I, E> Parser<I, Token<'a>, E> for TokenKind
+where
+    I: Stream<Token = Token<'a>> + StreamIsPartial,
+    E: ParserError<I>,
+{
+    fn parse_next(&mut self, input: &mut I) -> PResult<Token<'a>, E> {
+        any.verify(|t: &Token<'a>| t.kind == *self)
+            .parse_next(input)
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
 struct Token<'a> {
     kind: TokenKind,
     text: &'a str,
@@ -141,38 +124,13 @@ fn tokenise(input: &str) -> Vec<Token> {
 
 type Input<'a> = &'a [Token<'a>];
 
-fn satisfy<'a, F, Error: ParseError<Input<'a>>>(
-    cond: F,
-) -> impl Fn(Input<'a>) -> IResult<Input<'a>, &'a Token<'a>, Error>
-where
-    F: Fn(&Token<'a>) -> bool,
-{
-    move |i| match i.get(0).map(|t| {
-        let b = cond(&t);
-        (t, b)
-    }) {
-        Some((t, true)) => Ok((&i[1..], t)),
-        _ => Err(nom::Err::Error(Error::from_error_kind(
-            i,
-            ErrorKind::Satisfy,
-        ))),
-    }
-}
-
-fn match_text<'a, Error: ParseError<Input<'a>>>(
-    text: &'a str,
-) -> impl FnMut(Input<'a>) -> IResult<Input<'a>, &'a Token<'a>, Error> {
-    move |i| satisfy(|token: &Token<'a>| token.text == text)(i)
-}
-
-fn match_token<'a, Error: ParseError<Input<'a>>>(
-    kind: TokenKind,
-) -> impl FnMut(Input<'a>) -> IResult<Input<'a>, &'a Token<'a>, Error> {
-    move |i| satisfy(|token: &Token<'a>| token.kind == kind)(i)
-}
-
-fn ident<'a, Error: ParseError<Input<'a>>>(i: Input<'a>) -> IResult<Input<'a>, &str, Error> {
-    map(satisfy(|token| token.kind == TokenKind::Ident), |token| {
-        token.text
-    })(i)
+fn ident<'a>(input: &mut Input<'a>) -> PResult<&'a str> {
+    any.verify_map(|token: Token| {
+        if token.kind == TokenKind::Ident {
+            Some(token.text)
+        } else {
+            None
+        }
+    })
+    .parse_next(input)
 }
