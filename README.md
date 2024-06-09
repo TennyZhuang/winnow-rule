@@ -95,7 +95,7 @@ use winnow_rule::rule;
 use TokenKind::*;
 
 let mut rule = rule!(
-    CREATE ~ TABLE ~ #ident ~ ^"(" ~ (#ident ~ #ident ~ ","?)* ~ ")" ~ ";" : "CREATE TABLE statement"
+    #CREATE ~ #TABLE ~ #ident ~ ^#LParen ~ (#ident ~ #ident ~ #Comma?)* ~ #RParen ~ #Semicolon : "CREATE TABLE statement"
 );
 ```
 
