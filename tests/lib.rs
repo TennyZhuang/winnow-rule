@@ -1,13 +1,38 @@
 use logos::{Logos, Span};
 use winnow::{
-    error::ParserError,
+    error::{ContextError, ErrMode, ModalResult as PResult, ParserError, Result as ParseResult},
     stream::{Stream, StreamIsPartial},
     token::any,
-    PResult, Parser,
+    Parser,
 };
 use winnow_rule::rule;
 
 use TokenKind::*;
+
+#[test]
+fn simple_sequence_preserves_order_and_shape() {
+    let tokens = tokenise("create table user");
+
+    let mut rule = rule!(#CREATE ~ #TABLE ~ #ident);
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        (
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 7..12,
+            },
+            "user",
+        ),
+    );
+}
 
 #[test]
 fn sql_create_table() {
@@ -63,6 +88,232 @@ fn sql_create_table() {
     );
 }
 
+#[test]
+fn choice_uses_winnow_alt() {
+    let tokens = tokenise("table");
+
+    let mut rule = rule!(#CREATE | #TABLE);
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        Token {
+            kind: TABLE,
+            text: "table",
+            span: 0..5,
+        },
+    );
+}
+
+#[test]
+fn repeat_zero_or_more_returns_vec_and_allows_empty() {
+    let empty = tokenise("");
+    let mut empty_rule = rule!(#TABLE*);
+    let empty_res: PResult<Vec<_>> = empty_rule.parse_next(&mut &empty[..]);
+    assert_eq!(empty_res.unwrap(), Vec::<Token<'_>>::new());
+
+    let tokens = tokenise("table table table");
+    let mut rule = rule!(#TABLE*);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        vec![
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 0..5,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 6..11,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 12..17,
+            },
+        ],
+    );
+}
+
+#[test]
+fn repeat_one_or_more_requires_a_match() {
+    let empty = tokenise("");
+    let mut empty_rule = rule!(#TABLE+);
+    let empty_res: PResult<Vec<_>> = empty_rule.parse_next(&mut &empty[..]);
+    assert!(empty_res.is_err());
+
+    let tokens = tokenise("table table");
+    let mut rule = rule!(#TABLE+);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        vec![
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 0..5,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 6..11,
+            },
+        ],
+    );
+}
+
+#[test]
+fn optional_returns_none_without_consuming_input() {
+    let tokens = tokenise("create");
+    let mut input = &tokens[..];
+
+    let mut rule = rule!(#TABLE? ~ #CREATE);
+
+    let res: PResult<_> = rule.parse_next(&mut input);
+    assert_eq!(
+        res.unwrap(),
+        (
+            None,
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+        ),
+    );
+    assert_eq!(input, &[]);
+}
+
+#[test]
+fn peek_does_not_consume_input() {
+    let tokens = tokenise("create");
+    let mut input = &tokens[..];
+
+    let mut rule = rule!(&#CREATE ~ #CREATE);
+
+    let res: PResult<_> = rule.parse_next(&mut input);
+    assert_eq!(
+        res.unwrap(),
+        (
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+        ),
+    );
+    assert_eq!(input, &[]);
+}
+
+#[test]
+fn not_does_not_consume_input_on_success() {
+    let tokens = tokenise("create table");
+    let mut input = &tokens[..];
+
+    let mut rule = rule!(!#TABLE ~ #CREATE ~ #TABLE);
+
+    let res: PResult<_> = rule.parse_next(&mut input);
+    assert_eq!(
+        res.unwrap(),
+        (
+            (),
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 7..12,
+            },
+        ),
+    );
+    assert_eq!(input, &[]);
+}
+
+#[test]
+fn not_fails_when_the_predicate_matches() {
+    let tokens = tokenise("table");
+    let mut rule = rule!(!#TABLE ~ #CREATE);
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert!(res.is_err());
+}
+
+#[test]
+fn cut_and_context_report_a_labeled_cut() {
+    let tokens = tokenise("table");
+    let mut rule = rule!(^#CREATE : "expected CREATE");
+
+    let res: Result<Token<'_>, ErrMode<ContextError>> = rule.parse_next(&mut &tokens[..]);
+    assert!(matches!(res, Err(ErrMode::Cut(_))));
+
+    let debug = format!("{res:?}");
+    assert!(debug.contains("expected CREATE"), "{debug}");
+}
+
+#[test]
+fn long_alt_more_than_ten_branches_still_compiles_and_selects() {
+    let tokens = tokenise("eleven");
+
+    let mut rule = rule!(
+        #ONE
+            | #TWO
+            | #THREE
+            | #FOUR
+            | #FIVE
+            | #SIX
+            | #SEVEN
+            | #EIGHT
+            | #NINE
+            | #TEN
+            | #ELEVEN
+    );
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        Token {
+            kind: ELEVEN,
+            text: "eleven",
+            span: 0..6,
+        },
+    );
+}
+
+#[test]
+fn nested_combination_stays_composable() {
+    let tokens = tokenise("create table");
+    let mut rule = rule!((#CREATE ~ #TABLE) | (#TABLE ~ #TABLE));
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        (
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+            Token {
+                kind: TABLE,
+                text: "table",
+                span: 7..12,
+            },
+        ),
+    );
+}
+
 #[derive(Logos, Clone, Copy, Debug, PartialEq)]
 enum TokenKind {
     #[error]
@@ -74,6 +325,28 @@ enum TokenKind {
     CREATE,
     #[token("TABLE", ignore(ascii_case))]
     TABLE,
+    #[token("one", ignore(ascii_case))]
+    ONE,
+    #[token("two", ignore(ascii_case))]
+    TWO,
+    #[token("three", ignore(ascii_case))]
+    THREE,
+    #[token("four", ignore(ascii_case))]
+    FOUR,
+    #[token("five", ignore(ascii_case))]
+    FIVE,
+    #[token("six", ignore(ascii_case))]
+    SIX,
+    #[token("seven", ignore(ascii_case))]
+    SEVEN,
+    #[token("eight", ignore(ascii_case))]
+    EIGHT,
+    #[token("nine", ignore(ascii_case))]
+    NINE,
+    #[token("ten", ignore(ascii_case))]
+    TEN,
+    #[token("eleven", ignore(ascii_case))]
+    ELEVEN,
 
     // Symbols
     #[token("(")]
@@ -94,7 +367,7 @@ where
     I: Stream<Token = Token<'a>> + StreamIsPartial,
     E: ParserError<I>,
 {
-    fn parse_next(&mut self, input: &mut I) -> PResult<Token<'a>, E> {
+    fn parse_next(&mut self, input: &mut I) -> ParseResult<Token<'a>, E> {
         any.verify(|t: &Token<'a>| t.kind == *self)
             .parse_next(input)
     }
@@ -107,7 +380,7 @@ struct Token<'a> {
     span: Span,
 }
 
-fn tokenise(input: &str) -> Vec<Token> {
+fn tokenise(input: &str) -> Vec<Token<'_>> {
     let mut lex = TokenKind::lexer(input);
     let mut tokens = Vec::new();
 
