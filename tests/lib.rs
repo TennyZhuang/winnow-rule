@@ -1,9 +1,9 @@
 use logos::{Logos, Span};
 use winnow::{
-    error::ParserError,
+    error::{ModalResult as PResult, ParserError, Result as ParseResult},
     stream::{Stream, StreamIsPartial},
     token::any,
-    PResult, Parser,
+    Parser,
 };
 use winnow_rule::rule;
 
@@ -63,6 +63,57 @@ fn sql_create_table() {
     );
 }
 
+#[test]
+fn choice_uses_winnow_alt() {
+    let tokens = tokenise("table");
+
+    let mut rule = rule!(#CREATE | #TABLE);
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(
+        res.unwrap(),
+        Token {
+            kind: TABLE,
+            text: "table",
+            span: 0..5,
+        },
+    );
+}
+
+#[test]
+fn predicates_do_not_consume_input() {
+    let tokens = tokenise("create table");
+    let mut input = &tokens[..];
+
+    let mut rule = rule!(&#CREATE ~ !#TABLE ~ #CREATE);
+
+    let res: PResult<_> = rule.parse_next(&mut input);
+    assert_eq!(
+        res.unwrap(),
+        (
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+            (),
+            Token {
+                kind: CREATE,
+                text: "create",
+                span: 0..6,
+            },
+        ),
+    );
+    assert_eq!(
+        input,
+        &[Token {
+            kind: TABLE,
+            text: "table",
+            span: 7..12,
+        }]
+    );
+}
+
 #[derive(Logos, Clone, Copy, Debug, PartialEq)]
 enum TokenKind {
     #[error]
@@ -94,7 +145,7 @@ where
     I: Stream<Token = Token<'a>> + StreamIsPartial,
     E: ParserError<I>,
 {
-    fn parse_next(&mut self, input: &mut I) -> PResult<Token<'a>, E> {
+    fn parse_next(&mut self, input: &mut I) -> ParseResult<Token<'a>, E> {
         any.verify(|t: &Token<'a>| t.kind == *self)
             .parse_next(input)
     }
@@ -107,7 +158,7 @@ struct Token<'a> {
     span: Span,
 }
 
-fn tokenise(input: &str) -> Vec<Token> {
+fn tokenise(input: &str) -> Vec<Token<'_>> {
     let mut lex = TokenKind::lexer(input);
     let mut tokens = Vec::new();
 

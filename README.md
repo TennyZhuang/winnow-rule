@@ -4,7 +4,7 @@
 [![Crates.io](https://img.shields.io/crates/v/winnow-rule.svg)](https://crates.io/crates/winnow-rule)
 [![LICENSE from upstream](https://img.shields.io/github/license/andylokandy/nom-rule.svg)](https://github.com/andylokandy/nom-rule/blob/master/LICENSE)
 
-A procedural macro for defining [winnow][winnow] combinators in simple DSL. Requires `winnow` v0.6+.
+A procedural macro for defining [winnow][winnow] combinators in simple DSL. Requires `winnow` v1.0+.
 
 [winnow][winnow] is a fork of [nom][nom], see [Why `winnow`?][why-winnow] for more details.
 
@@ -23,7 +23,7 @@ Currently, the crate is under active development, and the syntax is not stable.
 
 ```toml
 [dependencies]
-winnow = "0.6.13"
+winnow = "1"
 winnow-rule = "0.1"
 ```
 

@@ -48,7 +48,6 @@ impl<'a> SliceLen for InputWrapper<'a> {
 impl<'a> StreamIsPartial for InputWrapper<'a> {
     type PartialState = <&'a [TokenTree] as StreamIsPartial>::PartialState;
 
-    #[must_use]
     #[inline(always)]
     fn complete(&mut self) -> Self::PartialState {
         self.0.complete()
@@ -87,6 +86,11 @@ impl<'a> Stream for InputWrapper<'a> {
     }
 
     #[inline(always)]
+    fn peek_token(&self) -> Option<Self::Token> {
+        self.0.peek_token()
+    }
+
+    #[inline(always)]
     fn offset_for<P>(&self, predicate: P) -> Option<usize>
     where
         P: Fn(Self::Token) -> bool,
@@ -105,6 +109,11 @@ impl<'a> Stream for InputWrapper<'a> {
     }
 
     #[inline(always)]
+    fn peek_slice(&self, offset: usize) -> Self::Slice {
+        InputWrapper(self.0.peek_slice(offset))
+    }
+
+    #[inline(always)]
     fn checkpoint(&self) -> Self::Checkpoint {
         CheckpointWrapper(self.0.checkpoint())
     }
@@ -115,9 +124,9 @@ impl<'a> Stream for InputWrapper<'a> {
     }
 
     #[inline(always)]
-    fn raw(&self) -> &dyn std::fmt::Debug {
+    fn trace(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // We customized the `Debug` implementation in the wrapper, so don't use `self.0` here.
-        self
+        write!(f, "{self:?}")
     }
 }
 

@@ -15,7 +15,7 @@ keywords = ["winnow", "parsing", "generator", "pest", "macro"]
 proc-macro = true
 
 [dependencies]
-winnow = "0.6.8"
+winnow = "1.0"
 syn = "1"
 quote = "1"
 pratt = "0.3"
