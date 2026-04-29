@@ -34,6 +34,7 @@ enum Rule {
     MatchText(Span, Literal),
     MatchToken(Span, Path),
     ExternalFunction(Span, Path, Option<Group>),
+    Discard(Span, Box<Rule>),
     Context(Span, Literal, Box<Rule>),
     Peek(Span, Box<Rule>),
     Not(Span, Box<Rule>),
@@ -50,6 +51,7 @@ enum RuleElement {
     MatchText(Literal),
     MatchToken(Path),
     ExternalFunction(Path, Option<Group>),
+    Discard,
     Context(Literal),
     Peek,
     Not,
@@ -80,6 +82,7 @@ type Input<'a> = InputWrapper<'a>;
 
 const MAX_ALT_BRANCHES: usize = 9;
 const MAX_SEQUENCE_ITEMS: usize = 11;
+const MAX_SEQ_MACRO_ITEMS: usize = 21;
 
 fn join_span(lhs: Span, rhs: Span) -> Span {
     lhs.join(rhs).unwrap_or(lhs)
@@ -120,6 +123,12 @@ fn ident<'a>(input: &mut Input<'a>) -> PResult<Ident> {
         }),
     )
     .parse_next(input)
+}
+
+fn discard_marker<'a>(input: &mut Input<'a>) -> PResult<Span> {
+    (ident.verify(|ident: &Ident| ident == "_"), match_punct(':'))
+        .map(|(underscore, colon)| join_span(underscore.span(), colon.span()))
+        .parse_next(input)
 }
 
 fn path<'a>(input: &mut Input<'a>) -> PResult<(Span, Path)> {
@@ -184,22 +193,10 @@ fn parse_rule_element<'a>(i: &mut Input<'a>) -> PResult<WithSpan> {
             span,
         }
     });
-    let operator = alt((
-        match_punct('|').map(|token| WithSpan {
-            span: token.span(),
-            elem: RuleElement::Alt,
-        }),
-        match_punct('*').map(|token| WithSpan {
-            span: token.span(),
-            elem: RuleElement::Many0,
-        }),
-        match_punct('+').map(|token| WithSpan {
-            span: token.span(),
-            elem: RuleElement::Many1,
-        }),
-        match_punct('?').map(|token| WithSpan {
-            span: token.span(),
-            elem: RuleElement::Opt,
+    let prefix_operator = alt((
+        discard_marker.map(|span| WithSpan {
+            span,
+            elem: RuleElement::Discard,
         }),
         match_punct('^').map(|token| WithSpan {
             span: token.span(),
@@ -213,12 +210,33 @@ fn parse_rule_element<'a>(i: &mut Input<'a>) -> PResult<WithSpan> {
             span: token.span(),
             elem: RuleElement::Not,
         }),
+    ));
+    let postfix_operator = alt((
+        match_punct('*').map(|token| WithSpan {
+            span: token.span(),
+            elem: RuleElement::Many0,
+        }),
+        match_punct('+').map(|token| WithSpan {
+            span: token.span(),
+            elem: RuleElement::Many1,
+        }),
+        match_punct('?').map(|token| WithSpan {
+            span: token.span(),
+            elem: RuleElement::Opt,
+        }),
+        context,
+    ));
+    let infix_operator = alt((
+        match_punct('|').map(|token| WithSpan {
+            span: token.span(),
+            elem: RuleElement::Alt,
+        }),
         match_punct('~').map(|token| WithSpan {
             span: token.span(),
             elem: RuleElement::Sequence,
         }),
-        context,
     ));
+    let operator = alt((prefix_operator, postfix_operator, infix_operator));
     let atom = alt((
         literal.map(|lit| WithSpan {
             span: lit.span(),
@@ -276,6 +294,7 @@ impl<I: Iterator<Item = WithSpan>> PrattParser<I> for RuleParser {
             RuleElement::Cut => Affix::Prefix(Precedence(5)),
             RuleElement::Peek => Affix::Prefix(Precedence(5)),
             RuleElement::Not => Affix::Prefix(Precedence(5)),
+            RuleElement::Discard => Affix::Prefix(Precedence(5)),
             _ => Affix::Nilfix,
         };
         Ok(affix)
@@ -325,6 +344,10 @@ impl<I: Iterator<Item = WithSpan>> PrattParser<I> for RuleParser {
 
     fn prefix(&mut self, elem: WithSpan, rhs: Rule) -> pratt::Result<Rule> {
         let rule = match elem.elem {
+            RuleElement::Discard => {
+                let span = join_span(elem.span, rhs.span());
+                Rule::Discard(span, Box::new(rhs))
+            }
             RuleElement::Cut => {
                 let span = join_span(elem.span, rhs.span());
                 Rule::Cut(span, Box::new(rhs))
@@ -396,6 +419,7 @@ impl Rule {
             Rule::MatchText(_, _) | Rule::MatchToken(_, _) | Rule::ExternalFunction(_, _, _) => {
                 ReturnType::Unknown
             }
+            Rule::Discard(_, _) => ReturnType::Unit,
             Rule::Context(_, _, rule) | Rule::Peek(_, rule) => rule.check_return_type(),
             Rule::Not(_, _) => ReturnType::Unit,
             Rule::Opt(_, rule) => ReturnType::Option(Box::new(rule.check_return_type())),
@@ -437,6 +461,7 @@ impl Rule {
             Rule::MatchText(span, _)
             | Rule::MatchToken(span, _)
             | Rule::ExternalFunction(span, _, _)
+            | Rule::Discard(span, _)
             | Rule::Context(span, _, _)
             | Rule::Peek(span, _)
             | Rule::Not(span, _)
@@ -453,6 +478,12 @@ impl Rule {
         let token = match self {
             Rule::ExternalFunction(_, name, arg) => {
                 quote! { #name #arg }
+            }
+            Rule::Discard(_, _) => {
+                abort!(
+                    self.span(),
+                    "`_:` discard syntax is only supported inside sequences",
+                );
             }
             Rule::Context(_, msg, rule) => {
                 let rule = rule.to_token_stream();
@@ -483,16 +514,30 @@ impl Rule {
                 quote! { winnow::combinator::repeat(1.., #rule) }
             }
             Rule::Sequence(_, rules) => {
-                if rules.len() > MAX_SEQUENCE_ITEMS {
-                    abort!(
-                        self.span(),
-                        "winnow 1.0 supports at most {} elements in a sequence; split with parenthesized sub-groups",
-                        MAX_SEQUENCE_ITEMS,
-                    );
+                if rules.iter().any(contains_discard) {
+                    if rules.len() > MAX_SEQ_MACRO_ITEMS {
+                        abort!(
+                            self.span(),
+                            "winnow::seq! supports at most {} items in a sequence; split with parenthesized sub-groups",
+                            MAX_SEQ_MACRO_ITEMS,
+                        );
+                    }
+
+                    let list: Punctuated<TokenStream, Token![,]> =
+                        rules.iter().map(sequence_item_to_token_stream).collect();
+                    quote! { winnow::seq!(#list) }
+                } else {
+                    if rules.len() > MAX_SEQUENCE_ITEMS {
+                        abort!(
+                            self.span(),
+                            "winnow 1.0 supports at most {} elements in a sequence; split with parenthesized sub-groups",
+                            MAX_SEQUENCE_ITEMS,
+                        );
+                    }
+                    let list: Punctuated<TokenStream, Token![,]> =
+                        rules.iter().map(|rule| rule.to_token_stream()).collect();
+                    quote! { ((#list)) }
                 }
-                let list: Punctuated<TokenStream, Token![,]> =
-                    rules.iter().map(|rule| rule.to_token_stream()).collect();
-                quote! { ((#list)) }
             }
             Rule::Alt(_, rules) => {
                 alt_to_token_stream(rules)
@@ -507,6 +552,31 @@ impl Rule {
         let mut tokens = TokenStream::new();
         self.to_tokens(&mut tokens);
         tokens
+    }
+}
+
+fn contains_discard(rule: &Rule) -> bool {
+    match rule {
+        Rule::Discard(_, _) => true,
+        Rule::Context(_, _, inner)
+        | Rule::Peek(_, inner)
+        | Rule::Not(_, inner)
+        | Rule::Opt(_, inner)
+        | Rule::Cut(_, inner)
+        | Rule::Many0(_, inner)
+        | Rule::Many1(_, inner) => contains_discard(inner),
+        Rule::Sequence(_, rules) | Rule::Alt(_, rules) => rules.iter().any(contains_discard),
+        Rule::MatchText(_, _) | Rule::MatchToken(_, _) | Rule::ExternalFunction(_, _, _) => false,
+    }
+}
+
+fn sequence_item_to_token_stream(rule: &Rule) -> TokenStream {
+    match rule {
+        Rule::Discard(_, inner) => {
+            let inner = inner.to_token_stream();
+            quote! { _: #inner }
+        }
+        other => other.to_token_stream(),
     }
 }
 

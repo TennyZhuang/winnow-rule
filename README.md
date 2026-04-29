@@ -33,14 +33,15 @@ The procedural macro `rule!` provided by this crate is designed for the ease of 
 
 1. `#fn_name`: an external [`winnow::Parser`][winnow-parser]. In the example **below**, `ident` and `TokenKind::*` are predefined parsers.
 2. `a ~ b ~ c`: a sequence of parsers to take one by one. It'll get expanded into `(a, b, c)`.
-3. `(...)+`: one or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(1.., #next)`.
-4. `(...)*`: zero or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(0.., #next)`.
-5. `(...)?`: Optional parser. It'll get expanded into `winnow::combinator::opt`.
-6. `a | b | c`: Choices between a, b, and c. It'll get expanded into `winnow::combinator::alt`.
-7. `&a`: Peek. It'll get expanded into `winnow::combinator::peek(a)`. Note that it doesn't consume the input.
-8. `!a`: Negative predicate. It'll get expanded into `winnow::combinator::not`. Note that it doesn't consume the input.
-9. `^a`:  Cut parser. It'll get expanded into `winnow::combinator::cut_err`.
-10. `... : "description"`: Context description for error reporting. It'll get expanded into [`winnow::Parser::context`][winnow-parser-context].
+3. `_: a`: discard one parser result inside a sequence. Sequences with discards get expanded through `winnow::seq!`.
+4. `(...)+`: one or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(1.., #next)`.
+5. `(...)*`: zero or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(0.., #next)`.
+6. `(...)?`: Optional parser. It'll get expanded into `winnow::combinator::opt`.
+7. `a | b | c`: Choices between a, b, and c. It'll get expanded into `winnow::combinator::alt`.
+8. `&a`: Peek. It'll get expanded into `winnow::combinator::peek(a)`. Note that it doesn't consume the input.
+9. `!a`: Negative predicate. It'll get expanded into `winnow::combinator::not`. Note that it doesn't consume the input.
+10. `^a`:  Cut parser. It'll get expanded into `winnow::combinator::cut_err`.
+11. `... : "description"`: Context description for error reporting. It'll get expanded into [`winnow::Parser::context`][winnow-parser-context].
 
 [winnow-parser]: https://docs.rs/winnow/latest/winnow/trait.Parser.html
 [winnow-parser-context]: https://docs.rs/winnow/latest/winnow/trait.Parser.html#method.context
@@ -50,7 +51,7 @@ The procedural macro `rule!` provided by this crate is designed for the ease of 
 Implement [`winnow::Parser`][winnow-parser] for your `TokenKind`, so that it can be used as an external parser described above.
 
 ```rust
-use winnow::{Parser, PResult, Stream};
+use winnow::{Parser, Stream, error::ModalResult as PResult};
 
 #[derive(Clone, Debug, PartialEq)]
 struct Token<'a> {
@@ -118,6 +119,44 @@ It will get expanded into:
 ```
 
 > See more example in `tests/lib.rs`.
+
+## When `rule!` is a good fit
+
+`rule!` is most useful when the grammar skeleton is more important than the
+incidental delimiters or keywords around it, especially on token streams.
+
+For example, a hand-written `seq!` parser for a token-stream `CAST` expression
+can be explicit about the output struct fields:
+
+```rust
+let parse = cut_err(seq! {Expr::Cast {
+    _: Token::LParen,
+    expr: expr_parse.map(Box::new),
+    _: Keyword::AS,
+    data_type: data_type,
+    _: Token::RParen,
+}});
+```
+
+The equivalent `rule!` parser keeps the parse skeleton compact while discarding
+the incidental tokens in-place:
+
+```rust
+let parse = rule!(
+    _:#TokenParser::LParen
+        ~ #expr_parse
+        ~ _:#KeywordParser::AS
+        ~ #data_type
+        ~ _:#TokenParser::RParen
+)
+.map(|(expr, data_type)| Expr::Cast {
+    expr: Box::new(expr),
+    data_type,
+});
+```
+
+Use `rule!` when that grammar-oriented view is clearer. Keep using `seq!` when
+named-field construction is the more readable form.
 
 ## Roadmap
 
