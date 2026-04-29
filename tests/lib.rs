@@ -35,6 +35,16 @@ fn simple_sequence_preserves_order_and_shape() {
 }
 
 #[test]
+fn sequence_discards_remove_tuple_noise() {
+    let tokens = tokenise("create table user");
+
+    let mut rule = rule!(_:#CREATE ~ _:#TABLE ~ #ident);
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(res.unwrap(), ("user",));
+}
+
+#[test]
 fn sql_create_table() {
     let tokens = tokenise("create table user (id int, name varchar);");
 
@@ -314,6 +324,29 @@ fn nested_combination_stays_composable() {
     );
 }
 
+#[test]
+fn token_stream_paths_discards_and_context_work_together() {
+    let tokens = tokenise("(value as int)");
+
+    let mut rule = cast_rule();
+
+    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(res.unwrap(), ("value", "int"));
+}
+
+#[test]
+fn token_stream_cut_and_context_error_on_missing_data_type() {
+    let tokens = tokenise("(value as )");
+
+    let mut rule = cast_rule();
+
+    let res: Result<(&str, &str), ErrMode<ContextError>> = rule.parse_next(&mut &tokens[..]);
+    assert!(matches!(res, Err(ErrMode::Cut(_))));
+
+    let debug = format!("{res:?}");
+    assert!(debug.contains("CAST expression"), "{debug}");
+}
+
 #[derive(Logos, Clone, Copy, Debug, PartialEq)]
 enum TokenKind {
     #[error]
@@ -325,6 +358,8 @@ enum TokenKind {
     CREATE,
     #[token("TABLE", ignore(ascii_case))]
     TABLE,
+    #[token("AS", ignore(ascii_case))]
+    AS,
     #[token("one", ignore(ascii_case))]
     ONE,
     #[token("two", ignore(ascii_case))]
@@ -406,4 +441,38 @@ fn ident<'a>(input: &mut Input<'a>) -> PResult<&'a str> {
         }
     })
     .parse_next(input)
+}
+
+fn expr_name<'a>(input: &mut Input<'a>) -> PResult<&'a str> {
+    ident.parse_next(input)
+}
+
+fn data_type_name<'a>(input: &mut Input<'a>) -> PResult<&'a str> {
+    ident.parse_next(input)
+}
+
+fn cast_rule<'a>() -> impl Parser<Input<'a>, (&'a str, &'a str), ErrMode<ContextError>> {
+    rule!(
+        _:#TokenParser::LParen
+            ~ #expr_name
+            ~ _:#KeywordParser::AS
+            ~ ^#data_type_name
+            ~ _:#TokenParser::RParen
+            : "CAST expression"
+    )
+}
+
+struct TokenParser;
+
+#[allow(non_upper_case_globals)]
+impl TokenParser {
+    const LParen: TokenKind = TokenKind::LParen;
+    const RParen: TokenKind = TokenKind::RParen;
+}
+
+struct KeywordParser;
+
+#[allow(non_upper_case_globals)]
+impl KeywordParser {
+    const AS: TokenKind = TokenKind::AS;
 }
