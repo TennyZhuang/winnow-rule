@@ -34,14 +34,16 @@ The procedural macro `rule!` provided by this crate is designed for the ease of 
 1. `#fn_name`: an external [`winnow::Parser`][winnow-parser]. In the example **below**, `ident` and `TokenKind::*` are predefined parsers.
 2. `a ~ b ~ c`: a sequence of parsers to take one by one. It'll get expanded into `(a, b, c)`.
 3. `_: a`: discard one parser result inside a sequence. Sequences with discards get expanded through `winnow::seq!`.
-4. `(...)+`: one or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(1.., #next)`.
-5. `(...)*`: zero or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(0.., #next)`.
-6. `(...)?`: Optional parser. It'll get expanded into `winnow::combinator::opt`.
-7. `a | b | c`: Choices between a, b, and c. It'll get expanded into `winnow::combinator::alt`.
-8. `&a`: Peek. It'll get expanded into `winnow::combinator::peek(a)`. Note that it doesn't consume the input.
-9. `!a`: Negative predicate. It'll get expanded into `winnow::combinator::not`. Note that it doesn't consume the input.
-10. `^a`:  Cut parser. It'll get expanded into `winnow::combinator::cut_err`.
-11. `... : "description"`: Context description for error reporting. It'll get expanded into [`winnow::Parser::context`][winnow-parser-context].
+4. `a % b`: zero or more `a` items separated by `b`. It'll get expanded into `winnow::combinator::separated(0.., a, b)`.
+5. `a %+ b`: one or more `a` items separated by `b`. It'll get expanded into `winnow::combinator::separated(1.., a, b)`.
+6. `(...)+`: one or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(1.., #next)`.
+7. `(...)*`: zero or more repeated patterns. It'll get expanded into `winnow::combinator::repeat(0.., #next)`.
+8. `(...)?`: Optional parser. It'll get expanded into `winnow::combinator::opt`.
+9. `a | b | c`: Choices between a, b, and c. It'll get expanded into `winnow::combinator::alt`.
+10. `&a`: Peek. It'll get expanded into `winnow::combinator::peek(a)`. Note that it doesn't consume the input.
+11. `!a`: Negative predicate. It'll get expanded into `winnow::combinator::not`. Note that it doesn't consume the input.
+12. `^a`:  Cut parser. It'll get expanded into `winnow::combinator::cut_err`.
+13. `... : "description"`: Context description for error reporting. It'll get expanded into [`winnow::Parser::context`][winnow-parser-context].
 
 [winnow-parser]: https://docs.rs/winnow/latest/winnow/trait.Parser.html
 [winnow-parser-context]: https://docs.rs/winnow/latest/winnow/trait.Parser.html#method.context
@@ -96,26 +98,37 @@ use winnow_rule::rule;
 use TokenKind::*;
 
 let mut rule = rule!(
-    #CREATE ~ #TABLE ~ #ident ~ ^#LParen ~ (#ident ~ #ident ~ #Comma?)* ~ #RParen ~ #Semicolon : "CREATE TABLE statement"
+    _:#CREATE
+        ~ _:#TABLE
+        ~ #ident
+        ~ _:(^#LParen)
+        ~ ((#ident ~ #ident) %+ #Comma)
+        ~ _:#RParen
+        ~ _:#Semicolon
+        : "CREATE TABLE statement"
 );
 ```
 
 It will get expanded into:
 
 ```rust
-    let mut rule = ((
-        CREATE,
-        TABLE,
+    let mut rule = winnow::seq!(
+        _: CREATE,
+        _: TABLE,
         ident,
-        winnow::combinator::cut_err(LParen),
-        winnow::combinator::repeat(
-            0..,
-            ((ident, ident, winnow::combinator::opt(Comma))),
-        ),
-        RParen,
-        Semicolon,
-    ))
+        _: winnow::combinator::cut_err(LParen),
+        winnow::combinator::separated(1.., ((ident, ident)), Comma),
+        _: RParen,
+        _: Semicolon,
+    )
     .context(winnow::error::StrContext::Label("CREATE TABLE statement"));
+```
+
+When a separated list is one step inside a larger sequence, parenthesize it so
+the surrounding `~` operators stay outside the list parser:
+
+```rust
+rule!(#head ~ ((#item ~ #value) %+ #Comma) ~ #tail);
 ```
 
 > See more example in `tests/lib.rs`.
