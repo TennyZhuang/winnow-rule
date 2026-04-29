@@ -49,53 +49,71 @@ fn sql_create_table() {
     let tokens = tokenise("create table user (id int, name varchar);");
 
     let mut rule = rule!(
-        #CREATE ~ #TABLE ~ #ident ~ ^#LParen ~ (#ident ~ #ident ~ #Comma?)* ~ #RParen ~ #Semicolon : "CREATE TABLE statement"
+        _:#CREATE
+            ~ _:#TABLE
+            ~ #ident
+            ~ _:(^#LParen)
+            ~ ((#ident ~ #ident) %+ #Comma)
+            ~ _:#RParen
+            ~ _:#Semicolon
+            : "CREATE TABLE statement"
     );
 
-    let res: PResult<_> = rule.parse_next(&mut &tokens[..]);
+    let res: PResult<(&str, Vec<(&str, &str)>)> = rule.parse_next(&mut &tokens[..]);
     assert_eq!(
         res.unwrap(),
-        (
-            Token {
-                kind: CREATE,
-                text: "create",
-                span: 0..6,
-            },
-            Token {
-                kind: TABLE,
-                text: "table",
-                span: 7..12,
-            },
-            "user",
-            Token {
-                kind: LParen,
-                text: "(",
-                span: 18..19,
-            },
-            vec![
-                (
-                    "id",
-                    "int",
-                    Some(Token {
-                        kind: Comma,
-                        text: ",",
-                        span: 25..26
-                    })
-                ),
-                ("name", "varchar", None),
-            ],
-            Token {
-                kind: RParen,
-                text: ")",
-                span: 39..40,
-            },
-            Token {
-                kind: Semicolon,
-                text: ";",
-                span: 40..41,
-            },
-        ),
+        ("user", vec![("id", "int"), ("name", "varchar"),],),
     );
+}
+
+#[test]
+fn separated_zero_or_more_allows_empty() {
+    let tokens = tokenise("");
+
+    let mut rule = rule!((#ident ~ #ident) % #Comma);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(res.unwrap(), Vec::<(&str, &str)>::new());
+}
+
+#[test]
+fn separated_one_or_more_requires_a_match() {
+    let tokens = tokenise("");
+
+    let mut rule = rule!((#ident ~ #ident) %+ #Comma);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert!(res.is_err());
+}
+
+#[test]
+fn separated_one_or_more_parses_a_single_item() {
+    let tokens = tokenise("id int");
+
+    let mut rule = rule!((#ident ~ #ident) %+ #Comma);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(res.unwrap(), vec![("id", "int")]);
+}
+
+#[test]
+fn separated_one_or_more_parses_multiple_items() {
+    let tokens = tokenise("id int, name varchar");
+
+    let mut rule = rule!((#ident ~ #ident) %+ #Comma);
+
+    let res: PResult<Vec<_>> = rule.parse_next(&mut &tokens[..]);
+    assert_eq!(res.unwrap(), vec![("id", "int"), ("name", "varchar")]);
+}
+
+#[test]
+fn separated_lists_reject_trailing_separator() {
+    let tokens = tokenise("id int,;");
+
+    let mut rule = rule!(((#ident ~ #ident) %+ #Comma) ~ _:#Semicolon);
+
+    let res: PResult<(Vec<(&str, &str)>,)> = rule.parse_next(&mut &tokens[..]);
+    assert!(res.is_err());
 }
 
 #[test]

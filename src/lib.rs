@@ -35,6 +35,8 @@ enum Rule {
     MatchToken(Span, Path),
     ExternalFunction(Span, Path, Option<Group>),
     Discard(Span, Box<Rule>),
+    Separated0(Span, Box<Rule>, Box<Rule>),
+    Separated1(Span, Box<Rule>, Box<Rule>),
     Context(Span, Literal, Box<Rule>),
     Peek(Span, Box<Rule>),
     Not(Span, Box<Rule>),
@@ -52,6 +54,8 @@ enum RuleElement {
     MatchToken(Path),
     ExternalFunction(Path, Option<Group>),
     Discard,
+    Separated0,
+    Separated1,
     Context(Literal),
     Peek,
     Not,
@@ -129,6 +133,22 @@ fn discard_marker<'a>(input: &mut Input<'a>) -> PResult<Span> {
     (ident.verify(|ident: &Ident| ident == "_"), match_punct(':'))
         .map(|(underscore, colon)| join_span(underscore.span(), colon.span()))
         .parse_next(input)
+}
+
+fn separated_marker<'a>(input: &mut Input<'a>) -> PResult<WithSpan> {
+    let percent = match_punct('%').parse_next(input)?;
+    let plus = opt(match_punct('+')).parse_next(input)?;
+    let span = plus
+        .as_ref()
+        .map(|plus| join_span(percent.span(), plus.span()))
+        .unwrap_or(percent.span());
+    let elem = if plus.is_some() {
+        RuleElement::Separated1
+    } else {
+        RuleElement::Separated0
+    };
+
+    Ok(WithSpan { elem, span })
 }
 
 fn path<'a>(input: &mut Input<'a>) -> PResult<(Span, Path)> {
@@ -231,6 +251,7 @@ fn parse_rule_element<'a>(i: &mut Input<'a>) -> PResult<WithSpan> {
             span: token.span(),
             elem: RuleElement::Alt,
         }),
+        separated_marker,
         match_punct('~').map(|token| WithSpan {
             span: token.span(),
             elem: RuleElement::Sequence,
@@ -286,15 +307,18 @@ impl<I: Iterator<Item = WithSpan>> PrattParser<I> for RuleParser {
     fn query(&mut self, elem: &WithSpan) -> pratt::Result<Affix> {
         let affix = match elem.elem {
             RuleElement::Alt => Affix::Infix(Precedence(1), Associativity::Left),
-            RuleElement::Context(_) => Affix::Postfix(Precedence(2)),
-            RuleElement::Sequence => Affix::Infix(Precedence(3), Associativity::Left),
-            RuleElement::Opt => Affix::Postfix(Precedence(4)),
-            RuleElement::Many1 => Affix::Postfix(Precedence(4)),
-            RuleElement::Many0 => Affix::Postfix(Precedence(4)),
-            RuleElement::Cut => Affix::Prefix(Precedence(5)),
-            RuleElement::Peek => Affix::Prefix(Precedence(5)),
-            RuleElement::Not => Affix::Prefix(Precedence(5)),
-            RuleElement::Discard => Affix::Prefix(Precedence(5)),
+            RuleElement::Separated0 | RuleElement::Separated1 => {
+                Affix::Infix(Precedence(2), Associativity::Left)
+            }
+            RuleElement::Context(_) => Affix::Postfix(Precedence(3)),
+            RuleElement::Sequence => Affix::Infix(Precedence(4), Associativity::Left),
+            RuleElement::Opt => Affix::Postfix(Precedence(5)),
+            RuleElement::Many1 => Affix::Postfix(Precedence(5)),
+            RuleElement::Many0 => Affix::Postfix(Precedence(5)),
+            RuleElement::Cut => Affix::Prefix(Precedence(6)),
+            RuleElement::Peek => Affix::Prefix(Precedence(6)),
+            RuleElement::Not => Affix::Prefix(Precedence(6)),
+            RuleElement::Discard => Affix::Prefix(Precedence(6)),
             _ => Affix::Nilfix,
         };
         Ok(affix)
@@ -337,6 +361,14 @@ impl<I: Iterator<Item = WithSpan>> PrattParser<I> for RuleParser {
                     Rule::Alt(span, vec![lhs, rhs])
                 }
             },
+            RuleElement::Separated0 => {
+                let span = join_span(lhs.span(), rhs.span());
+                Rule::Separated0(span, Box::new(lhs), Box::new(rhs))
+            }
+            RuleElement::Separated1 => {
+                let span = join_span(lhs.span(), rhs.span());
+                Rule::Separated1(span, Box::new(lhs), Box::new(rhs))
+            }
             _ => unreachable!(),
         };
         Ok(rule)
@@ -420,6 +452,10 @@ impl Rule {
                 ReturnType::Unknown
             }
             Rule::Discard(_, _) => ReturnType::Unit,
+            Rule::Separated0(_, item, separator) | Rule::Separated1(_, item, separator) => {
+                separator.check_return_type();
+                ReturnType::Vec(Box::new(item.check_return_type()))
+            }
             Rule::Context(_, _, rule) | Rule::Peek(_, rule) => rule.check_return_type(),
             Rule::Not(_, _) => ReturnType::Unit,
             Rule::Opt(_, rule) => ReturnType::Option(Box::new(rule.check_return_type())),
@@ -462,6 +498,8 @@ impl Rule {
             | Rule::MatchToken(span, _)
             | Rule::ExternalFunction(span, _, _)
             | Rule::Discard(span, _)
+            | Rule::Separated0(span, _, _)
+            | Rule::Separated1(span, _, _)
             | Rule::Context(span, _, _)
             | Rule::Peek(span, _)
             | Rule::Not(span, _)
@@ -506,12 +544,40 @@ impl Rule {
                 quote! { winnow::combinator::cut_err(#rule) }
             }
             Rule::Many0(_, rule) => {
+                if matches!(
+                    rule.as_ref(),
+                    Rule::Separated0(_, _, _) | Rule::Separated1(_, _, _)
+                ) {
+                    abort!(
+                        self.span(),
+                        "do not apply `*` to a separated list; `%` already means zero or more items",
+                    );
+                }
                 let rule = rule.to_token_stream();
                 quote! { winnow::combinator::repeat(0.., #rule) }
             }
             Rule::Many1(_, rule) => {
+                if matches!(
+                    rule.as_ref(),
+                    Rule::Separated0(_, _, _) | Rule::Separated1(_, _, _)
+                ) {
+                    abort!(
+                        self.span(),
+                        "do not apply `+` to a separated list; `%+` already means one or more items",
+                    );
+                }
                 let rule = rule.to_token_stream();
                 quote! { winnow::combinator::repeat(1.., #rule) }
+            }
+            Rule::Separated0(_, item, separator) => {
+                let item = item.to_token_stream();
+                let separator = separator.to_token_stream();
+                quote! { winnow::combinator::separated(0.., #item, #separator) }
+            }
+            Rule::Separated1(_, item, separator) => {
+                let item = item.to_token_stream();
+                let separator = separator.to_token_stream();
+                quote! { winnow::combinator::separated(1.., #item, #separator) }
             }
             Rule::Sequence(_, rules) => {
                 if rules.iter().any(contains_discard) {
@@ -539,9 +605,7 @@ impl Rule {
                     quote! { ((#list)) }
                 }
             }
-            Rule::Alt(_, rules) => {
-                alt_to_token_stream(rules)
-            }
+            Rule::Alt(_, rules) => alt_to_token_stream(rules),
             _ => unimplemented!(),
         };
 
@@ -558,6 +622,9 @@ impl Rule {
 fn contains_discard(rule: &Rule) -> bool {
     match rule {
         Rule::Discard(_, _) => true,
+        Rule::Separated0(_, item, separator) | Rule::Separated1(_, item, separator) => {
+            contains_discard(item) || contains_discard(separator)
+        }
         Rule::Context(_, _, inner)
         | Rule::Peek(_, inner)
         | Rule::Not(_, inner)
